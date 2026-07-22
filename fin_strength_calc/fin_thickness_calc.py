@@ -270,6 +270,7 @@ def report(args):
     add(_range_note(args.pitch, FIN_PITCH_RANGE, "핀 피치"))
     add(_range_note(args.height, FIN_H_RANGE, "핀 높이"))
 
+    all_pass = True
     if args.t_fin:
         t_eff = args.t_fin * args.tol_factor     # 합부 판정은 유효두께 기준 (문서 §8-5)
         add("-" * 64)
@@ -281,18 +282,26 @@ def report(args):
         st = fin_stress_tension(args.dp_t * args.stay_factor, args.pitch, t_eff) \
             if args.dp_t > 0 else 0.0
         ok_t = st <= s
-        add(f"  인장 σ_t={st:.2f} MPa vs S={s:.2f} MPa → {'합격 ✓' if ok_t else '불합격 ✗'}")
+        all_pass = all_pass and ok_t
+        st_label = "σ_t" if args.stay_factor == 1.0 else f"f·σ_t (f={args.stay_factor})"
+        add(f"  인장 {st_label}={st:.2f} MPa vs S={s:.2f} MPa → "
+            f"{'합격 ✓' if ok_t else '불합격 ✗'}")
         if args.dp_c > 0:
             sc = fin_stress_compression(args.dp_c, args.pitch, t_eff)
             sa = compression_allowable(t_eff, args.height, e, sy, s, args.k)
             scr = buckling_critical(t_eff, args.height, e, sy, args.k)
             ok_c = sc <= sa
+            all_pass = all_pass and ok_c
             add(f"  압축 σ_c={sc:.2f} MPa vs min(σ_cr/{DF_BUCKLING:.0f}, S)="
                 f"{sa:.2f} MPa (σ_cr={scr:.1f}, Johnson) → {'합격 ✓' if ok_c else '불합격 ✗'}")
 
     if args.w_sheet > 0 or args.p_min > 0:
         pitch_bar = max(args.pitch, args.pitch_adj or 0.0)
-        t_fin_eff = (args.t_fin * args.tol_factor) if args.t_fin else t_req_eff
+        if args.pitch_adj > args.pitch:
+            # 성긴 쪽(인접층) 핀 두께는 미지수이므로 보수적으로 풋 폭 공제 생략 (문서 §6.1)
+            t_fin_eff = 0.0
+        else:
+            t_fin_eff = (args.t_fin * args.tol_factor) if args.t_fin else t_req_eff
         span = pitch_bar - t_fin_eff
         if span <= 0:
             raise ValueError(f"파팅시트 스팬이 0 이하 (p̄={pitch_bar}, t_eff={t_fin_eff})")
@@ -307,6 +316,8 @@ def report(args):
         add(_range_note(tps, SHEET_T_RANGE, "파팅시트 소요두께"))
         if tps < SHEET_T_RANGE[0]:
             add(f"    → ALPEMA 표준 최소 {SHEET_T_RANGE[0]} mm 적용 권장")
+        if args.pitch_adj > args.pitch:
+            add("    ※ 인접층 피치 지배: 성긴 쪽 층 핀 두께 미상 → 풋 폭 공제 생략(s=p̄, 보수적)")
         if not args.pitch_adj:
             add("    ※ 인접층 피치 미입력(--pitch-adj): 자층 피치만 사용 — 인접층이 더")
             add("      성기면 비보수적이므로 반드시 양면 중 성긴 피치를 반영할 것 (문서 §6.1)")
@@ -314,7 +325,7 @@ def report(args):
     add("=" * 64)
     add("주의: S/Sy/E 테이블은 대표값 — 적용 코드 연도판으로 검증할 것.")
     add("인증 설계는 ALPEMA 5.15.1.1(승인 계산법)/5.15.1.2(파열시험)에 따름.")
-    return "\n".join(lines)
+    return "\n".join(lines), all_pass
 
 
 def selftest():
@@ -390,16 +401,53 @@ def selftest():
     # --- 극한 거동 통일: ΔP→0 이면 두께→0 ---
     assert fin_min_thickness_tension(0.0, 1.4, s65) == 0.0
     assert fin_min_thickness_compression(0.0, 1.4, 6.5, e93, sy93, s65) == 0.0
+
+    # --- report()/main() 경로 회귀 테스트 ---
+    import contextlib
+    import io
+
+    def run_main(argv):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = main(argv)
+        return rc, buf.getvalue()
+
+    # 공차계수 반영 합부판정: 공칭 0.26 × 0.9 = 유효 0.234 < 0.2518 → 불합격, exit 1
+    rc, out = run_main(["--dp-t", "5", "--temp", "65", "--pitch", "1.4",
+                        "--tol-factor", "0.9", "--t-fin", "0.26"])
+    assert rc == 1 and "불합격" in out, (rc, "공차 반영 불합격 판정 회귀")
+    # 동일 공칭 0.26, 공차 미적용이면 σ_t=21.9 ≤ 22.8 → 합격, exit 0
+    rc, out = run_main(["--dp-t", "5", "--temp", "65", "--pitch", "1.4",
+                        "--t-fin", "0.26"])
+    assert rc == 0 and "불합격" not in out, (rc, "합격 케이스 회귀")
+    # 인접층 피치 지배 시 풋 폭 공제 생략 (s = p̄ = 4.0)
+    rc, out = run_main(["--dp-t", "5", "--temp", "65", "--pitch", "1.4",
+                        "--t-fin", "0.3", "--w-sheet", "5", "--pitch-adj", "4.0"])
+    assert rc == 0 and "s=4.000 mm" in out and "풋 폭 공제 생략" in out, \
+        (rc, "pitch-adj 지배 스팬 회귀")
+    # --s-table: dict/1열 입력 거부, 배열은 순서 무관 수용
+    rc, _ = run_main(["--dp-t", "5", "--pitch", "1.4",
+                      "--s-table", '{"40": 22.8}'])
+    assert rc == 2, "--s-table dict 입력이 거부되지 않음"
+    rc, out = run_main(["--dp-t", "5", "--temp", "65", "--pitch", "1.4",
+                        "--s-table", "[[93, 22.6], [40, 22.8], [204, 11.0]]"])
+    assert rc == 0 and "사용자 제공 S 테이블" in out, "--s-table 비정렬 배열 회귀"
     print("selftest: OK (모든 검증 통과)")
 
 
 def _parse_s_table(text):
     try:
         rows = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"--s-table JSON 형식 오류: {exc}")
+    if (not isinstance(rows, list) or not rows
+            or not all(isinstance(r, (list, tuple)) and len(r) == 2 for r in rows)):
+        raise ValueError('--s-table 은 [[T°C, S MPa], ...] 형태의 2열 배열이어야 함')
+    try:
         table = [(float(a), float(b)) for a, b in rows]
     except (ValueError, TypeError) as exc:
-        raise ValueError(f"--s-table JSON 형식 오류: {exc}")
-    table.sort(key=lambda r: r[0])
+        raise ValueError(f"--s-table 숫자 변환 오류: {exc}")
+    table.sort(key=lambda r: r[0])  # 온도 순서 무관 — 자동 정렬
     _validate_table(table, "--s-table")
     return table
 
@@ -429,7 +477,8 @@ def main(argv=None):
     ap.add_argument("--tol-factor", type=float, default=1.0,
                     help="제작 공차 계수 (0<f≤1, 예: 0.9 → 공칭두께의 90%%만 유효 가정)")
     ap.add_argument("--s-table", type=str, default=None,
-                    help='허용응력 테이블 교체용 JSON: [[T°C, S MPa], ...] (온도 오름차순)')
+                    help='허용응력 테이블 교체용 JSON: [[T°C, S MPa], ...] '
+                         '(온도 순서 무관 — 자동 정렬됨)')
     ap.add_argument("--selftest", action="store_true", help="내부 검증 실행")
     args = ap.parse_args(argv)
 
@@ -459,11 +508,12 @@ def main(argv=None):
         ap.error("--dp-t 또는 --dp-c 중 하나는 0보다 커야 합니다")
     try:
         args.s_table = _parse_s_table(args.s_table) if args.s_table else None
-        print(report(args))
+        text, all_pass = report(args)
+        print(text)
     except ValueError as exc:
         print(f"오류: {exc}", file=sys.stderr)
         return 2
-    return 0
+    return 0 if all_pass else 1   # 검증 불합격 시 exit 1 (자동화 파이프라인용)
 
 
 if __name__ == "__main__":
