@@ -272,6 +272,285 @@ for r in list(range(5, 17)) + list(range(21, 33)) + list(range(34, 40)) \
         + list(range(41, 49)):
     ws.row_dimensions[r].height = 15
 
+# ---------------- 강도계산서 (요약 리포트) ----------------
+# 모든 값은 [계산기] 시트를 참조하는 수식 — 입력을 바꾸면 계산서도 자동 갱신된다.
+ws_r = wb.create_sheet("강도계산서")
+wb.move_sheet("강도계산서", -(len(wb.sheetnames) - 2))   # 계산기 바로 뒤
+ws_r.sheet_view.showGridLines = False
+for col, w in zip("ABCDEFGH", (1.8, 4.5, 27, 27, 12, 8, 17, 17)):
+    ws_r.column_dimensions[col].width = w
+ws_r.page_setup.orientation = "portrait"
+ws_r.page_setup.paperSize = ws_r.PAPERSIZE_A4
+ws_r.sheet_properties.pageSetUpPr.fitToPage = True
+ws_r.page_setup.fitToWidth = 1
+ws_r.page_setup.fitToHeight = 0
+ws_r.print_options.horizontalCentered = True
+ws_r.page_margins.left = ws_r.page_margins.right = 0.4
+
+f_rtitle = Font(name=ARIAL, size=15, bold=True, color="FFFFFF")
+f_rsec = Font(name=ARIAL, size=10.5, bold=True, color="FFFFFF")
+f_rh = Font(name=ARIAL, size=9, bold=True, color="FFFFFF")
+f_rb = Font(name=ARIAL, size=9)
+f_rbb = Font(name=ARIAL, size=9, bold=True)
+f_rin = Font(name=ARIAL, size=9, bold=True, color="0000FF")
+f_rsm = Font(name=ARIAL, size=8, color="444444")
+fill_sec = PatternFill("solid", fgColor="1F4E78")
+fill_th = PatternFill("solid", fgColor="4472C4")
+fill_alt = PatternFill("solid", fgColor="F7F9FC")
+med = Side(style="medium", color="1F4E78")
+
+def rmerge(r, c1, c2, value=None):
+    ws_r.merge_cells(start_row=r, start_column=c1, end_row=r, end_column=c2)
+    cell = ws_r.cell(r, c1)
+    if value is not None:
+        cell.value = value
+    return cell
+
+def rsec(r, text):
+    c = rmerge(r, 2, 8, text)
+    c.font = f_rsec; c.fill = fill_sec
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws_r.row_dimensions[r].height = 18
+
+def rhead(r, labels, widths_cols):
+    for txt, (c1, c2) in zip(labels, widths_cols):
+        c = rmerge(r, c1, c2, txt) if c2 > c1 else ws_r.cell(r, c1, txt)
+        c.font = f_rh; c.fill = fill_th; c.alignment = ctr; c.border = box
+    ws_r.row_dimensions[r].height = 16
+
+def rrow(r, cells, cols, *, alt=False, num=None, bold_col=None):
+    """cells: 값/수식 리스트, cols: [(c1,c2), ...] 병합범위."""
+    for i, (txt, (c1, c2)) in enumerate(zip(cells, cols)):
+        c = rmerge(r, c1, c2, txt) if c2 > c1 else ws_r.cell(r, c1, txt)
+        c.font = f_rbb if bold_col == i else f_rb
+        c.border = box
+        if alt:
+            c.fill = fill_alt
+        if num and num[i]:
+            c.number_format = num[i]
+            c.alignment = ctr if num[i] == "General" else right
+        else:
+            c.alignment = left if c1 in (3, 4) else ctr
+    ws_r.row_dimensions[r].height = 15
+
+# --- 표제 ---
+t = rmerge(1, 2, 8, "강 도 계 산 서   /   STRENGTH CALCULATION SHEET")
+t.font = f_rtitle; t.fill = fill_sec; t.alignment = ctr
+ws_r.row_dimensions[1].height = 30
+t2 = rmerge(2, 2, 8,
+            "PFHE(Brazed Aluminium Plate-Fin Heat Exchanger) Plain 핀 두께 강도 검토 "
+            "· ASME Sec. VIII Div.1 / ALPEMA Standard 2024")
+t2.font = Font(name=ARIAL, size=8.5, italic=True, color="333333")
+t2.alignment = ctr
+ws_r.row_dimensions[2].height = 14
+
+# --- 1. 문서 정보 ---
+rsec(4, "1.  문 서 정 보  (Document Information)")
+doc_rows = [
+    ("프로젝트명", "", "문서번호", ""),
+    ("기기번호 (Item No.)", "", "Rev.", "0"),
+    ("작성자 (Prepared by)", "", "작성일 (Date)", ""),
+    ("검토자 (Checked by)", "", "적용 코드", None),
+]
+for i, (l1, v1, l2, v2) in enumerate(doc_rows):
+    r = 5 + i
+    a = rmerge(r, 2, 3, l1); a.font = f_rbb; a.border = box; a.alignment = right
+    b = rmerge(r, 4, 5, v1); b.font = f_rin; b.fill = fill_in; b.border = box
+    b.alignment = left
+    c = ws_r.cell(r, 6, l2); c.font = f_rbb; c.border = box; c.alignment = right
+    d = rmerge(r, 7, 8)
+    d.border = box; d.alignment = left
+    if v2 is None:
+        d.value = "ASME Sec. VIII Div.1 / ALPEMA 2024"
+        d.font = f_rb
+    else:
+        d.value = v2; d.font = f_rin; d.fill = fill_in
+    ws_r.row_dimensions[r].height = 15
+
+# --- 2. 설계 조건 ---
+rsec(10, "2.  설 계 조 건  (Design Conditions)")
+COLS4 = [(2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 8)]
+rhead(11, ["No.", "항 목", "기 호", "값", "단위", "비 고"], COLS4)
+design = [
+    ("설계온도", "T", "=계산기!$C$5", "°C", '=IF(계산기!$C$5>204,"⚠️ 재질한계 204°C 초과","≤ 204 (ALPEMA Table 6-1)")', "0.0"),
+    ("핀 인장 유발 차압", "ΔP_t", "=계산기!$C$6", "MPa", "층 설계압력(MAWP), 인접층 0 가정", "0.000"),
+    ("핀 압축 유발 차압", "ΔP_c", "=계산기!$C$7", "MPa", '=IF(계산기!$C$7>0,"인접층 가압 / 자층 감압 조건","해당 없음")', "0.000"),
+    ("자층 핀 피치", "p", "=계산기!$C$8", "mm", "=계산기!$C$31", "0.000"),
+    ("인접층 핀 피치", "p_adj", "=계산기!$C$9", "mm", '=IF(계산기!$C$9>0,"파팅시트 스팬 지배 검토","미입력 (자층 기준)")', "0.000"),
+    ("핀 높이 (=사이드바 높이)", "h", "=계산기!$C$10", "mm", "=계산기!$C$32", "0.0"),
+    ("좌굴 유효길이계수", "K", "=계산기!$C$11", "-", '=IF(계산기!$C$11<=0.7,"고정-힌지 준용 (sway 억제 전제)","보수적 적용")', "0.00"),
+    ("인장 스테이 계수", "f", "=계산기!$C$12", "-", '=IF(계산기!$C$12>1,"UG-50(b) 준용 (+10%)","미적용")', "0.00"),
+    ("제작 공차계수", "—", "=계산기!$C$13", "-", '=IF(계산기!$C$13<1,"유효두께 = 공칭 × 공차계수","공차 미반영")', "0.00"),
+    ("파팅시트 층간 차압", "w", "=계산기!$C$14", "MPa", "|P_A − P_B|", "0.000"),
+    ("균형가압 압력", "P_min", "=계산기!$C$15", "MPa", '=IF(계산기!$C$15>0,"핀 풋 어긋남 교번하중 반영","미고려")', "0.000"),
+    ("선정 핀 두께 (공칭)", "t_sel", '=IF(계산기!$C$16>0,계산기!$C$16,"—")', "mm", '=IF(계산기!$C$16>0,"§5 검증 대상","미선정 — 검증 생략")', "0.000"),
+]
+for i, (nm, sym, val, unit, note, nf) in enumerate(design):
+    r = 12 + i
+    rrow(r, [i + 1, nm, sym, val, unit, note], COLS4, alt=(i % 2 == 1),
+         num=["General", None, "General", nf, "General", None], bold_col=1)
+
+# --- 3. 재료 및 허용응력 ---
+rsec(25, "3.  재 료 및 허 용 응 력  (Material & Allowable Stress)")
+rhead(26, ["No.", "항 목", "기 호", "값", "단위", "출 처 / 비 고"], COLS4)
+mat = [
+    ("핀 재질", "—", "AL 3003-O", "-", "SB-209, 브레이징 후 완전 어닐링(ALPEMA 5.13)", "General"),
+    ("설계온도 허용응력", "S(T)", "=계산기!$C$21", "MPa", "ASME Sec. II-D Table 1B (온도 선형보간)", "0.00"),
+    ("설계온도 항복강도", "Sy(T)", "=계산기!$C$22", "MPa", "Johnson 비탄성 좌굴 천이용", "0.00"),
+    ("설계온도 탄성계수", "E(T)", "=계산기!$C$23", "MPa", "ASME Sec. II-D TM (좌굴 임계응력용)", "0"),
+    ("포아송비", "ν", "=계산기!$C$18", "-", "알루미늄 합금", "0.00"),
+    ("좌굴 설계계수", "DF", "=계산기!$C$19", "-", "ASME Div.1 UG-28 철학 준용", "0.0"),
+]
+for i, (nm, sym, val, unit, note, nf) in enumerate(mat):
+    r = 27 + i
+    rrow(r, [i + 1, nm, sym, val, unit, note], COLS4, alt=(i % 2 == 1),
+         num=["General", None, "General", nf, "General", None], bold_col=1)
+
+# --- 4. 강도 계산 결과 ---
+rsec(34, "4.  강 도 계 산 결 과  (Calculation Results)")
+COLS5 = [(2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 8)]
+rhead(35, ["No.", "검 토 항 목", "적 용 식", "계산값", "단위",
+           "기준 / 판정"], COLS5)
+calcs = [
+    ("핀 인장 최소두께", "t ≥ f·ΔP_t·p / (S + f·ΔP_t)", "=계산기!$C$26", "mm",
+     '="식(2) — 지배: "&IF(계산기!$C$26>=계산기!$C$27,"■ 인장 지배","인장 비지배")'),
+    ("핀 좌굴 최소두께", "ΔP_c·p/t ≤ min(σ_cr/DF, S)", "=계산기!$C$27", "mm",
+     '=IF(계산기!$C$7<=0,"식(3~5) — ΔP_c=0, 해당 없음","식(3~5) Johnson 천이 — "&IF(계산기!$C$27>계산기!$C$26,"■ 좌굴 지배","좌굴 비지배"))'),
+    ("요구 핀두께 (유효)", "max( 4.1 , 4.2 )", "=계산기!$C$28", "mm",
+     "최소 보증두께 기준"),
+    ("요구 핀두께 (공칭)", "유효두께 / 공차계수", "=계산기!$C$29", "mm",
+     "=계산기!$C$30"),
+    ("파팅시트 최소두께", "t_ps ≥ √( 4·M_d / S )", "=계산기!$C$38", "mm",
+     "=계산기!$C$39"),
+]
+for i, (nm, eq, val, unit, judge) in enumerate(calcs):
+    r = 36 + i
+    rrow(r, [f"4.{i + 1}", nm, eq, val, unit, judge], COLS5, alt=(i % 2 == 1),
+         num=["General", None, None, "0.0000", "General", None], bold_col=1)
+# 파팅시트 보조 정보
+rrow(41, ["", "  (파팅시트 중간값)",
+          '="지배 피치 p̄ = "&TEXT(계산기!$C$34,"0.000")&" mm,  스팬 s = "&TEXT(계산기!$C$36,"0.000")&" mm"',
+          "=계산기!$C$37", "N·mm/mm", "설계 모멘트 M_d = w·s²/12 + P_min·(p̄−t)·p̄/8"],
+     COLS5, num=[None, None, None, "0.0000", "General", None])
+for c in range(2, 9):
+    ws_r.cell(41, c).font = f_rsm
+
+# --- 5. 선정 사양 검증 ---
+rsec(43, "5.  선 정 사 양 검 증  (Verification of Selected Fin)")
+COLS6 = [(2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)]
+rhead(44, ["No.", "검 토 항 목", "적 용 식", "계산 응력", "허용 응력",
+           "안전율 SF", "판 정"], COLS6)
+ver = [
+    ("핀 인장 응력", "f·σ_t = f·ΔP_t·(p−t)/t",
+     '=IF(계산기!$C$42="","—",계산기!$C$42)', "=계산기!$C$21",
+     '=IF(AND(ISNUMBER(계산기!$C$42),계산기!$C$42>0),계산기!$C$21/계산기!$C$42,"—")',
+     '=IF(계산기!$C$43="","—",계산기!$C$43)'),
+    ("핀 압축·좌굴 응력", "σ_c = ΔP_c·p/t",
+     '=IF(계산기!$C$44="","—",계산기!$C$44)',
+     '=IF(계산기!$C$46="","—",계산기!$C$46)',
+     '=IF(AND(ISNUMBER(계산기!$C$44),계산기!$C$44>0),계산기!$C$46/계산기!$C$44,"—")',
+     '=IF(계산기!$C$47="","—",계산기!$C$47)'),
+]
+for i, (nm, eq, sig, allow, sf, judge) in enumerate(ver):
+    r = 45 + i
+    rrow(r, [f"5.{i + 1}", nm, eq, sig, allow, sf, judge], COLS6,
+         alt=(i % 2 == 1),
+         num=["General", None, None, "0.00", "0.00", "0.00", "General"],
+         bold_col=1)
+# 5.3 두께 여유
+rrow(47, ["5.3", "핀 두께 여유", "유효 t / 요구 t (유효 기준)",
+          '=IF(계산기!$C$16>0,계산기!$C$41,"—")',
+          "=계산기!$C$28",
+          '=IF(AND(계산기!$C$16>0,계산기!$C$28>0),계산기!$C$41/계산기!$C$28,"—")',
+          '=IF(계산기!$C$16<=0,"—",IF(계산기!$C$41>=계산기!$C$28,"합격 ✓","불합격 ✗"))'],
+     COLS6, num=["General", None, None, "0.000", "0.000", "0.00", "General"],
+     bold_col=1)
+# 5.4 좌굴 임계응력 참고
+rrow(48, ["5.4", "  (참고) 좌굴 임계응력",
+          "σ_cr : Johnson 포물선 천이 적용",
+          '=IF(계산기!$C$45="","—",계산기!$C$45)', "—",
+          '=IF(AND(ISNUMBER(계산기!$C$45),계산기!$C$44>0),계산기!$C$45/계산기!$C$44,"—")',
+          "참고값"],
+     COLS6, alt=True,
+     num=["General", None, None, "0.00", "General", "0.00", "General"])
+for c in range(2, 9):
+    ws_r.cell(48, c).font = f_rsm
+
+# --- 6. 결론 ---
+rsec(50, "6.  결 론  (Conclusion)")
+concl = [
+    '="1)  설계조건 — 설계온도 "&TEXT(계산기!$C$5,"0")&" °C, 인장차압 ΔP_t = "'
+    '&TEXT(계산기!$C$6,"0.000")&" MPa, 압축차압 ΔP_c = "&TEXT(계산기!$C$7,"0.000")'
+    '&" MPa, 핀 피치 "&TEXT(계산기!$C$8,"0.000")&" mm, 핀 높이 "'
+    '&TEXT(계산기!$C$10,"0.0")&" mm."',
+    '="2)  허용응력 S(T) = "&TEXT(계산기!$C$21,"0.00")'
+    '&" MPa (AL 3003-O, ASME Sec. II-D) 기준, 요구 핀두께는 "'
+    '&IF(ISNUMBER(계산기!$C$29),TEXT(계산기!$C$29,"0.000")&" mm (공칭)",계산기!$C$29)'
+    '&" 이며 ALPEMA 제작범위(0.15~0.7 mm) 대비 "&계산기!$C$30&" 이다."',
+    '="3)  파팅시트 최소두께는 "&IF(ISNUMBER(계산기!$C$38),'
+    'TEXT(계산기!$C$38,"0.000")&" mm",계산기!$C$38)'
+    '&" 이며, ALPEMA 표준범위(0.8~2.0 mm) 대비 "&계산기!$C$39&" 이다."',
+    '="4)  선정 핀두께 "&IF(계산기!$C$16>0,TEXT(계산기!$C$16,"0.000")&" mm (유효 "'
+    '&TEXT(계산기!$C$41,"0.000")&" mm)","(미선정)")&" 에 대한 응력 검증 결과 — 인장 "'
+    '&IF(계산기!$C$16>0,계산기!$C$43,"생략")&IF(계산기!$C$7>0,", 압축·좌굴 "'
+    '&IF(계산기!$C$16>0,계산기!$C$47,"생략"),"")&" 로 평가되었다."',
+]
+for i, cf in enumerate(concl):
+    r = 51 + i
+    c = rmerge(r, 2, 8, cf)
+    c.font = f_rb
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws_r.row_dimensions[r].height = 15
+
+# 최종 판정 박스
+fin = rmerge(56, 2, 8,
+             '="■  최 종 판 정  :   "&계산기!$C$48&'
+             'IF(계산기!$C$5>204,"   (설계온도 재질한계 초과 — 결과 무효)","")')
+fin.font = Font(name=ARIAL, size=12, bold=True, color="1F4E78")
+fin.fill = PatternFill("solid", fgColor="DDEBF7")
+fin.alignment = ctr
+fin.border = Border(left=med, right=med, top=med, bottom=med)
+ws_r.row_dimensions[56].height = 26
+
+# --- 7. 적용 기준 및 한계 ---
+rsec(58, "7.  적 용 기 준 및 한 계  (Basis & Limitations)")
+limits = [
+    "· 본 계산서는 예비설계용이다. 인증 설계는 ALPEMA 5.15.1.1(코드 당국 승인 계산법) "
+    "또는 5.15.1.2(파열시험)로 확정하여야 한다.",
+    "· 정적 압력하중 전용 — 열응력·피로는 ALPEMA 8.1의 운전 제한(±1 °C/min 등)으로 별도 관리한다.",
+    "· 허용응력 S(T)·항복강도 Sy(T)·탄성계수 E(T)는 대표값이며, 적용 코드 연도판의 "
+    "ASME Sec. II-D 값으로 검증·교체하여야 한다. ([물성DB] 시트)",
+    "· 149 °C 이상 장기 운전은 크리프 영향으로 별도 검토가 필요하다. 204 °C 초과는 3003 재질 적용범위 밖이다.",
+    "· 대상은 Plain 핀에 한한다. Serrated·Perforated 핀, 디스트리뷰터 핀, 헤더·노즐부는 범위 밖이다.",
+    "· 인접층 압력은 신뢰할 수 있는 감압 방지 수단이 없는 한 0(대기압)으로 가정하였다 "
+    "(ALPEMA 5.6.1 개별 챔버 가압 / 5.6.2.1 단일 챔버 설계압력 근거).",
+    "· 상세 유도 근거: fin_thickness_derivation.md,  계산 로직 원본: fin_thickness_calc.py",
+]
+for i, txt in enumerate(limits):
+    r = 59 + i
+    c = rmerge(r, 2, 8, txt)
+    c.font = f_rsm
+    c.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+    ws_r.row_dimensions[r].height = 13
+
+# --- 서명란 ---
+sign_r = 59 + len(limits) + 1
+rhead(sign_r, ["", "작 성 (Prepared)", "검 토 (Checked)", "", "승 인 (Approved)",
+               "", "일 자 (Date)"],
+      [(2, 2), (3, 3), (4, 5), (6, 6), (7, 7), (8, 8), (8, 8)])
+for c1, c2 in [(3, 3), (4, 5), (7, 8)]:
+    cell = rmerge(sign_r + 1, c1, c2)
+    cell.border = box
+ws_r.cell(sign_r + 1, 2).border = box
+ws_r.cell(sign_r + 1, 6).border = box
+ws_r.row_dimensions[sign_r + 1].height = 34
+foot = rmerge(sign_r + 3, 2, 8,
+              '="본 계산서는 [계산기] 시트의 입력값에 연동되어 자동 산출됨.   '
+              '적용 코드: ASME Sec. VIII Div.1 · ALPEMA Standard 2024   |   '
+              '재질: AL 3003-O   |   단위: MPa, mm"')
+foot.font = f_rsm
+foot.alignment = ctr
+
 # ---------------- 설명 시트 ----------------
 ws_n = wb.create_sheet("설명")
 ws_n.sheet_view.showGridLines = False
@@ -294,9 +573,12 @@ notes = [
     ("온도 반영:     S(T)/Sy(T)/E(T)를 [물성DB] 표에서 온도 선형보간 (204°C 초과 무효)", 10, False, None),
     ("", 10, False, None),
     ("■ 시트 구성", 11, True, "2E75B6"),
-    ("계산기   — 입력/결과 (메인)", 10, False, None),
-    ("물성DB   — S(T)/Sy(T)/E(T) 표 (코드 연도판으로 교체 대상)", 10, False, None),
-    ("좌굴스캔 — 좌굴 최소두께 반복해용 스캔 테이블 (수정 불필요)", 10, False, None),
+    ("계산기     — 입력/결과 (메인). 여기서만 입력합니다.", 10, False, None),
+    ("강도계산서 — 계산 결과를 문서 형식으로 요약 (설계조건·재료·계산결과·검증·결론·서명란).", 10, False, None),
+    ("             [계산기] 입력에 자동 연동되며, A4 세로 1페이지 폭에 맞춰 인쇄됩니다.", 10, False, None),
+    ("             문서정보(프로젝트명·기기번호·작성자 등) 파랑 셀은 직접 입력하세요.", 10, False, None),
+    ("물성DB     — S(T)/Sy(T)/E(T) 표 (코드 연도판으로 교체 대상)", 10, False, None),
+    ("좌굴스캔   — 좌굴 최소두께 반복해용 스캔 테이블 (수정 불필요)", 10, False, None),
     ("", 10, False, None),
     ("■ 한계 및 주의", 11, True, "C00000"),
     ("· 예비설계용. 정적 압력하중 전용(열응력·피로는 ALPEMA 8.1 운전제한으로 별도 관리).", 10, False, None),
